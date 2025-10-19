@@ -38,4 +38,64 @@ export const animate = Object.assign(
   },
   animateObject
 );
-  
+
+class ElementAnimation {
+  private animation: Animation;
+
+  constructor(animation: Animation) {
+    this.animation = animation;
+  }
+
+  async playAndWait() {
+    this.animation.play();
+    await this.animation.finished;
+    this.animation.cancel();
+  }
+
+  play(): this {
+    this.animation.play();
+    return this;
+  }
+
+  pause(): this {
+    this.animation.pause();
+    return this;
+  }
+
+  cancel(): this {
+    this.animation.cancel();
+    return this;
+  }
+
+  finish(): this {
+    this.animation.finish();
+    return this;
+  }
+  reverse(): this {
+    this.animation.reverse();
+    return this;
+  }
+  get playbackRate(): number {
+    return this.animation.playbackRate;
+  }
+  set playbackRate(rate: number) {
+    this.animation.playbackRate = rate;
+  }
+  async finished(): Promise<void> {
+    await this.animation.finished;
+  }
+  get isRunning(): boolean {
+    return this.animation.playState === "running";
+  }
+  get native(): Animation {
+    return this.animation;
+  }
+}
+
+export function animateElement(
+  element: HTMLElement,
+  keyframes: KeyFrames,
+  options?: Options
+) {
+  return new ElementAnimation(element.animate(keyframes, options));
+}

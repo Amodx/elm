@@ -1,6 +1,7 @@
-import { ElementChildren, ElementProps } from "./ElementProps";
+import { ElementChildren, ElementProps, SvgElementProps } from "./ElementProps";
 import { SignalsController } from "./SignalController";
 import { RefernceObject } from "./ElementProps";
+import { animateElement } from "./animate";
 
 export function useRef<Refernce = any>(
   current: Refernce | null = null
@@ -15,42 +16,67 @@ export function useElmRef<Tag extends keyof HTMLElementTagNameMap>(
   return useRef<HTMLElementTagNameMap[Tag]>(current);
 }
 
-function deepMerge(target: any, source: any): any {
-  for (const key in source) {
-    if (source[key] && typeof source[key] === "object") {
-      if (!target[key] || typeof target[key] !== "object") {
-        target[key] = Array.isArray(source[key]) ? [] : {};
-      }
-      deepMerge(target[key], source[key]);
-    } else {
-      target[key] = source[key];
+function processPropsString(el: Element, string: string) {
+  const tokens = string.split(" ");
+  for (const token of tokens) {
+    if (!token) continue;
+    const firstChar = token.charAt(0);
+    if (firstChar == "#") {
+      el.id = token.replace("#", "");
+      continue;
     }
+    if (firstChar == ".") {
+      for (const classToken of token.split(".")) {
+        if (!classToken) continue;
+        el.classList.add(classToken);
+      }
+      continue;
+    }
+    if (token.includes("=")) {
+      for (const attributeToken of token.split(",")) {
+        const [key, value] = attributeToken.split("=");
+        if (!key || !value) continue;
+        el.setAttribute(key, value);
+      }
+      continue;
+    }
+    el.className = token;
   }
-  return target;
 }
 
-function appendChildern(
-  el: HTMLElement | DocumentFragment,
-  children: ElementChildren[]
+function addChild(child: ElementChildren, frag: DocumentFragment) {
+  if (child === null || child === false || child === undefined) return;
+  if (typeof child === "string") {
+    frag.appendChild(document.createTextNode(child));
+    return;
+  }
+  if (typeof child === "number") {
+    frag.appendChild(document.createTextNode(String(child)));
+    return;
+  }
+  if (Array.isArray(child)) {
+    processChildren(child, frag);
+  } else {
+    frag.appendChild(child);
+  }
+}
+
+function processChildren(children: ElementChildren, frag: DocumentFragment) {
+  if (Array.isArray(children)) {
+    for (const child of children) {
+      addChild(child, frag);
+    }
+    return;
+  }
+  addChild(children, frag);
+}
+
+function appendChildren(
+  el: Element | DocumentFragment,
+  children: ElementChildren
 ) {
   const tempFrag = document.createDocumentFragment();
-  for (const child of children) {
-    if (child === null) continue;
-    if (child === false) continue;
-    if (typeof child === "string") {
-      tempFrag.textContent = child;
-    } else {
-      if (Array.isArray(child)) {
-        child.forEach((_) =>
-          Array.isArray(_)
-            ? _.forEach((_) => tempFrag.appendChild(_))
-            : tempFrag.appendChild(_)
-        );
-      } else {
-        tempFrag.appendChild(child);
-      }
-    }
-  }
+  processChildren(children, tempFrag);
   el.appendChild(tempFrag);
 }
 
@@ -59,36 +85,43 @@ function applyProps<Tag extends keyof HTMLElementTagNameMap>(
   el: HTMLElementTagNameMap[Tag]
 ) {
   for (const key in props) {
-    if (props.hasOwnProperty(key)) {
-      const value = props[key as keyof ElementProps<Tag>];
-      if (key in el) {
-        if (key == "dataset" && typeof value == "object" && value !== null) {
-          for (const key in value) {
-            el.dataset[key] = String(value[key]);
-          }
-          continue;
+    const value = props[key as keyof ElementProps<Tag>];
+    if (key in el) {
+      const isObject = typeof value === "object" && value !== null;
+      if (key == "attributes" && isObject) {
+        for (const key in value) {
+          el.setAttribute(key, String(value[key]));
         }
-        if (typeof value === "object" && key == "style" && value !== null) {
-          deepMerge((el as any)[key], value);
-          continue;
+        continue;
+      }
+      if (key == "dataset" && isObject) {
+        for (const key in value) {
+          el.dataset[key] = String(value[key]);
         }
+        continue;
+      }
+      if (key == "style" && isObject) {
+        for (const key in value) {
+          el.style[key as any] = String(value[key]);
+        }
+        continue;
+      }
 
-        (el as any)[key] = value;
+      (el as any)[key] = value;
+    } else {
+      if (
+        typeof value === "string" ||
+        (typeof value === "number" && value !== null)
+      ) {
+        el.setAttribute(key, String(value));
       } else {
-        if (
-          typeof value === "string" ||
-          (typeof value === "number" && value !== null)
-        ) {
-          el.setAttribute(key, String(value));
-        } else {
-          (el as any)[key] = value;
-        }
+        (el as any)[key] = value;
       }
     }
   }
 }
 
-const tags: Record<
+const wrapTags: Record<
   keyof HTMLElementTagNameMap,
   ReturnType<typeof wrap<{}, keyof HTMLElementTagNameMap>>
 > = new Proxy(
@@ -108,53 +141,61 @@ const tags: Record<
   ReturnType<typeof wrap<{}, keyof HTMLElementTagNameMap>>
 >;
 
-type ElmType = <Tag extends keyof HTMLElementTagNameMap>(
-  tag: Tag,
-  props?: ElementProps<Tag> | string,
-  ...children: ElementChildren[]
-) => Tag extends keyof HTMLElementTagNameMap
-  ? HTMLElementTagNameMap[Tag]
-  : HTMLElement;
-
 export const props = <Tag extends keyof HTMLElementTagNameMap>(
   props: Partial<ElementProps<Tag>>
 ) => {
   return props as any;
 };
 
+function applyAndProcess(
+  el: Element,
+  props?: SvgElementProps<any> | ElementProps<any> | string | null,
+  children?: ElementChildren
+) {
+  let isObjectProps = typeof props == "object" && props !== null;
+  let objectProps = props as ElementProps<any>;
+  if (isObjectProps) {
+    if (objectProps.hooks?.beforeRender) objectProps.hooks.beforeRender();
+
+    if (objectProps.ref) {
+      objectProps.ref!.current = el;
+    }
+
+    applyProps(objectProps, el);
+  }
+
+  appendChildren(el, children);
+
+  if (props && typeof props == "string") {
+    processPropsString(el, props);
+  }
+
+  if (isObjectProps) {
+    applySignal(objectProps, el);
+    if (objectProps.hooks?.afterRender) objectProps.hooks.afterRender(el);
+  }
+}
+
+/**Record of cached elements to clone */
+const tags: Record<string, HTMLElement> = {};
+
+type ElmType = <Tag extends keyof HTMLElementTagNameMap>(
+  tag: Tag,
+  props?: ElementProps<Tag> | string | null,
+  ...children: ElementChildren[]
+) => Tag extends keyof HTMLElementTagNameMap
+  ? HTMLElementTagNameMap[Tag]
+  : HTMLElement;
+
 const _elm: ElmType = (tag, props, ...children) => {
-  const el = document.createElement(tag as keyof HTMLElementTagNameMap);
-
-  if (typeof props == "object") {
-    if ((props as ElementProps<any>).hooks?.beforeRender)
-      (props as ElementProps<any>).hooks.beforeRender();
-
-    if ((props as ElementProps<any>).ref) {
-      (props as ElementProps<any>).ref!.current = el;
-    }
-
-    applyProps(props as ElementProps<any>, el);
+  let el: HTMLElement;
+  if (!tags[tag]) {
+    const newElm = document.createElement(tag as keyof HTMLElementTagNameMap);
+    tags[tag] = newElm;
   }
+  el = tags[tag].cloneNode(false) as HTMLElement;
 
-  if (typeof props == "string") {
-    el.className = props;
-  }
-
-  appendChildern(el, children);
-
-  if (typeof props == "object") {
-    if ((props as ElementProps<any>).signal) {
-      if (Array.isArray((props as ElementProps<any>).signal)) {
-        (props as ElementProps<any>).signal!.forEach((_: any) =>
-          SignalsController.register(_, el)
-        );
-      } else {
-        SignalsController.register((props as ElementProps<any>).signal!, el);
-      }
-    }
-    if ((props as ElementProps<any>).hooks?.afterRender)
-      (props as ElementProps<any>).hooks.afterRender(el);
-  }
+  applyAndProcess(el, props, children);
   return el as any;
 };
 
@@ -212,74 +253,45 @@ export const wrap = <
       return process(newProps, children) as any;
     };
   }
-  return tags[tag] as any;
+  return wrapTags[tag] as any;
 };
+
+function applySignal(objectProps: ElementProps<any>, el: Element) {
+  if (objectProps.signal) {
+    if (Array.isArray(objectProps.signal)) {
+      for (let i = 0; i < objectProps.signal.length; i++) {
+        SignalsController.register(objectProps.signal[i], el);
+      }
+    } else {
+      SignalsController.register(objectProps.signal!, el);
+    }
+  }
+}
 
 export function html(
   htmlString: string,
-  props: ElementProps<any> = {},
+  props: ElementProps<any> | string | null = null,
   ...children: ElementChildren[]
 ): HTMLElement {
-  if (props.hooks?.beforeRender) props.hooks.beforeRender();
   const template = document.createElement("template");
   template.innerHTML = htmlString.trim();
   const el = template.content.firstChild as HTMLElement;
-  if (props.ref) {
-    props.ref.current = el;
-  }
-
-  applyProps(props, el);
-
-  appendChildern(el, children);
-
-  if (props.signal) {
-    if (Array.isArray(props.signal)) {
-      props.signal.forEach((_: any) => SignalsController.register(_, el));
-    } else {
-      SignalsController.register(props.signal, el);
-    }
-  }
-  if (props.hooks?.afterRender) props.hooks.afterRender(el);
+  applyAndProcess(el, props, children);
   return el;
 }
 
 export function raw<Tag extends keyof HTMLElementTagNameMap>(
   el: HTMLElementTagNameMap[Tag],
-  props: ElementProps<Tag> | string = {} as any,
+  props: ElementProps<Tag> | string | null = null,
   ...children: ElementChildren[]
 ): HTMLElementTagNameMap[Tag] {
-  if (typeof props == "object") {
-    if (props.hooks?.beforeRender) props.hooks.beforeRender();
-
-    if (props.ref) {
-      props.ref.current = el;
-    }
-
-    applyProps(props, el);
-  }
-
-  if (typeof props == "string") {
-    el.className = props;
-  }
-
-  appendChildern(el, children);
-
-  if (typeof props == "object") {
-    if (props.signal) {
-      if (Array.isArray(props.signal)) {
-        props.signal.forEach((_) => SignalsController.register(_, el));
-      } else {
-        SignalsController.register(props.signal, el);
-      }
-    }
-    if (props.hooks?.afterRender) props.hooks.afterRender(el);
-  }
+  applyAndProcess(el, props, children);
   return el;
 }
 
 export function frag(...children: ElementChildren[]): DocumentFragment {
   const frag = document.createDocumentFragment();
-  appendChildern(frag, children);
+  appendChildren(frag, children);
   return frag;
 }
 
@@ -289,26 +301,31 @@ export function css(cssString: string) {
   document.head.appendChild(styleElement);
 }
 
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+export function svg<Tag extends keyof SVGElementTagNameMap>(
+  tag: Tag,
+  props: SvgElementProps<Tag> | string | null,
+  ...children: ElementChildren[]
+): SVGElementTagNameMap[Tag] {
+  const el = document.createElementNS(SVG_NS, tag) as SVGElementTagNameMap[Tag];
+
+  applyAndProcess(el, props, children);
+  return el as any;
+}
+
 const ElmModule = {
   applyProps,
-  appendChildern,
+  appendChildren,
   wrap,
   frag,
   html,
   raw,
   props,
   css,
-  tags,
+  svg,
+  animate: animateElement,
+  tags: wrapTags,
 };
 
-export const elm: ElmType & {
-  applyProps: typeof applyProps;
-  appendChildern: typeof appendChildern;
-  wrap: typeof wrap;
-  props: typeof props;
-  frag: typeof frag;
-  html: typeof html;
-  raw: typeof raw;
-  css: typeof css;
-  tags: typeof tags;
-} = Object.assign(_elm, ElmModule);
+export const elm: ElmType & typeof ElmModule = Object.assign(_elm, ElmModule);
