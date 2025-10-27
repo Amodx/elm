@@ -2,7 +2,65 @@ import { ElementChildren, ElementProps, SvgElementProps } from "./ElementProps";
 import { SignalsController } from "./SignalController";
 import { RefernceObject } from "./ElementProps";
 import { animateElement } from "./animate";
+const EFFECT_TAG = "amodx-elm-effect-hook";
+export class EffectElement extends HTMLElement {
+  _mount: () => void | null;
+  _unmount: () => void | null;
+  private _parent: HTMLElement | null;
+  private _didMount = false;
+  connectedCallback() {
+    if (this._didMount) return;
+    this._parent = this.parentElement;
+    if (!this._parent) return;
+    this._didMount = true;
+    this._mount?.();
+  }
 
+  disconnectedCallback() {
+    if (!this._didMount) return;
+    if (this._parent?.isConnected) {
+      this._parent.append(this);
+      return;
+    }
+    this._unmount?.();
+  }
+}
+
+function ensureEffectElementRegistered(targetWindow?: Window | null) {
+  try {
+    const w =
+      targetWindow ?? (typeof window !== "undefined" ? window : undefined);
+    if (!w || !w.customElements) return;
+
+    if (!w.customElements.get(EFFECT_TAG)) {
+      w.customElements.define(EFFECT_TAG, EffectElement);
+    }
+
+    const doc = w.document;
+    if (!doc.getElementById(`${EFFECT_TAG}-style`)) {
+      const style = doc.createElement("style");
+      style.id = `${EFFECT_TAG}-style`;
+      style.textContent = /* css */ `
+        ${EFFECT_TAG} {
+          display: none;
+          visibility: hidden;
+          opacity: 0;
+          position: absolute;
+          width: 0;
+          height: 0;
+          margin: 0;
+          padding: 0;
+          overflow: hidden;
+          pointer-events: none;
+          contain: strict;
+        }
+      `;
+      doc.head.appendChild(style);
+    }
+  } catch (error) {
+    console.warn(`Could not set up useEffect for @amodx/elm`, error);
+  }
+}
 export function useRef<Refernce = any>(
   current: Refernce | null = null
 ): RefernceObject<Refernce> {
@@ -16,31 +74,105 @@ export function useElmRef<Tag extends keyof HTMLElementTagNameMap>(
   return useRef<HTMLElementTagNameMap[Tag]>(current);
 }
 
-function processPropsString(el: Element, string: string) {
-  const tokens = string.split(" ");
+class Query {
+  id: string | null = null;
+  classes: string[] | null = null;
+  attributes: Record<string, string> | null = null;
+}
+
+function matchesQuery(element: HTMLElement, query: Query) {
+  if (query.id && element.id != query.id) return false;
+  if (query.classes) {
+    for (const cssClass of query.classes) {
+      if (!element.classList.contains(cssClass)) return false;
+    }
+  }
+  if (query.attributes) {
+    for (const key in query.attributes) {
+      if (
+        !(
+          element.hasAttribute(key) &&
+          element.getAttribute(key) == query.attributes[key]
+        )
+      )
+        return false;
+    }
+  }
+  return true;
+}
+
+function findParent(
+  element: HTMLElement,
+  queryString: string,
+  stopElement: HTMLElement | null = null
+) {
+  const query = processQueryString(queryString);
+  let currentParent: HTMLElement | null = element;
+  while (currentParent) {
+    if (matchesQuery(currentParent, query)) return currentParent;
+    currentParent = currentParent.parentElement;
+    if (currentParent == stopElement) break;
+  }
+  return null;
+}
+function findChild(
+  element: HTMLElement,
+  queryString: string,
+  stopElement: HTMLElement | null = null
+): HTMLElement | null {
+  const query = processQueryString(queryString);
+
+  const stack: HTMLElement[] = [element];
+  while (stack.length) {
+    const current = stack.pop()!;
+    if (matchesQuery(current, query)) return current;
+    if (current === stopElement) break;
+    for (const child of Array.from(current.children) as HTMLElement[]) {
+      stack.push(child);
+    }
+  }
+  return null;
+}
+function processQueryString(queryString: string) {
+  const query = new Query();
+  const tokens = queryString.split(" ");
   for (const token of tokens) {
     if (!token) continue;
     const firstChar = token.charAt(0);
     if (firstChar == "#") {
-      el.id = token.replace("#", "");
+      query.id = token.replace("#", "");
       continue;
     }
     if (firstChar == ".") {
+      query.classes = [];
       for (const classToken of token.split(".")) {
         if (!classToken) continue;
-        el.classList.add(classToken);
+        query.classes.push(classToken);
       }
       continue;
     }
     if (token.includes("=")) {
       for (const attributeToken of token.split(",")) {
+        query.attributes = {};
         const [key, value] = attributeToken.split("=");
         if (!key || !value) continue;
-        el.setAttribute(key, value);
+        query.attributes[key] = value;
       }
       continue;
     }
-    el.className = token;
+    query.classes = [token];
+  }
+  return query;
+}
+
+function processPropsString(el: Element, string: string) {
+  const query = processQueryString(string);
+  if (query.id) el.id = query.id;
+  if (query.classes) el.classList.add(...query.classes);
+  if (query.attributes) {
+    for (const key in query.attributes) {
+      el.setAttribute(key, query.attributes[key]);
+    }
   }
 }
 
@@ -147,6 +279,7 @@ export const props = <Tag extends keyof HTMLElementTagNameMap>(
   return props as any;
 };
 
+let effectElm: EffectElement;
 function applyAndProcess(
   el: Element,
   props?: SvgElementProps<any> | ElementProps<any> | string | null,
@@ -173,6 +306,16 @@ function applyAndProcess(
   if (isObjectProps) {
     applySignal(objectProps, el);
     if (objectProps.hooks?.afterRender) objectProps.hooks.afterRender(el);
+    if (objectProps.hooks?.mount || objectProps.hooks?.unmount) {
+      if (!effectElm) {
+        ensureEffectElementRegistered();
+        effectElm = document.createElement(EFFECT_TAG) as any;
+      }
+      const newEffect = effectElm.cloneNode(false) as EffectElement;
+      newEffect._mount = objectProps.hooks.mount;
+      newEffect._unmount = objectProps.hooks.unmount;
+      el.append(newEffect);
+    }
   }
 }
 
@@ -326,6 +469,8 @@ const ElmModule = {
   svg,
   animate: animateElement,
   tags: wrapTags,
+  findParent,
+  findChild,
 };
 
 export const elm: ElmType & typeof ElmModule = Object.assign(_elm, ElmModule);

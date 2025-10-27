@@ -73,6 +73,8 @@ export type ElementProps<Tag extends keyof HTMLElementTagNameMap> = ProperOmit<
     hooks?: {
       beforeRender?: () => void;
       afterRender?: (elm: HTMLElementTagNameMap[Tag]) => void;
+      mount?: () => void;
+      unmount?: () => void;
     };
   },
   never
@@ -100,6 +102,8 @@ export type SvgElementProps<Tag extends keyof SVGElementTagNameMap> =
       hooks?: {
         beforeRender?: () => void;
         afterRender?: (elm: SVGElementTagNameMap[Tag]) => void;
+        mount?: () => void;
+        unmount?: () => void;
       };
     },
     never
